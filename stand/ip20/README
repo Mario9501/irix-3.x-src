@@ -25,6 +25,8 @@ then gives an "ip20>" prompt:
   trap KIND  raise an exception on purpose (no KIND lists them)
   regs     registers at the last exception
   vectors  exception vectors, the PROM's code there, cache line sizes
+  tlb      show the valid TLB entries
+  vm       test TLB refill, demand paging, dirty bits, wired entries
   reboot   reset the machine
   exit     return to the PROM
 
@@ -161,12 +163,72 @@ What that settled:
     memory from the MC rather than trusting the PROM.
 
 
+TLB and paging
+--------------
+The R4000 has no hardware page-table walker: every TLB miss in mapped
+space jumps to the refill vector, and software loads the entry.  Each
+of the 48 entries maps an even/odd pair of pages (EntryHi holds the
+page-pair number and ASID; EntryLo0/1 the frame and flags of each
+half).  ip20mon's refill handler (vec_tlb in exc.S, 26 instructions at
+0x80000000) indexes a page table covering the low 64 MB of kuseg, one
+EntryLo pair per 8K, and writes the pair at a random index with tlbwr.
+Misses above 64 MB go to trap().
+
+If the pair isn't valid, the retried access takes a TLB invalid
+exception through the general vector, and trap() asks vm.c to page it
+in: a zeroed physical page from a pool carved out of the PROM's largest
+free region, mapped clean if the access was a read.  The first store to
+a clean page takes a TLB-modified exception, which marks it dirty; a
+store to a read-only region stays a fault.
+
+Physical pages are allocated with the same cache color as their virtual
+address (bits 14:12).  The R4000SC's primary caches are virtually
+indexed and its secondary cache records which virtual index each line
+was used with; one physical page used at two colors raises virtual
+coherency exceptions.  Matching colors also keeps kseg0 accesses to the
+same pages, which use the physical address as the virtual address, at
+the same color.
+
+badaddr(), named after the IRIX kernel routine, tries one access and
+returns -1 instead of abandoning the command if it faults; the "vm"
+tests use it for the faults they expect.  The PROM's TLB contents,
+Wired, PageMask and EntryHi are saved at startup and put back after
+"vm" and on exit.
+
+"vm" runs:
+  1. a wired entry (kseg2 0xc0000000 -> MC registers, uncached), checked
+     by reading the MC's SYSID through it and through kseg1
+  2. demand-zero: one store to each of 128 pages (128 faults, a refill
+     per page pair), then a read-back of every page
+  3. dirty tracking: read a page (mapped clean), write it (one
+     TLB-modified fault, then dirty)
+  4. expected faults: a store to the read-only region, a null pointer,
+     and an address above the page table
+  5. the wired entry is still in place after all the random refills
+
+All nine checks passed on the Indigo R4000: 128 page faults and 64
+refills for the stores, about 64 refills again for the read-back (the
+pairs no longer fit), a page mapped clean (EntryLo 0022201a) turning
+dirty (0022201e) after one TLB-modified fault, the three expected
+faults, and the wired entry intact after 131 refills.  What the run
+showed:
+  - The PROM leaves no valid TLB entries but sets Wired to 8, so
+    entries 0-7 are reserved; ip20mon puts its wired entry at index 8
+    and leaves the reservation alone.
+  - The first run "passed" a check it shouldn't have: gcc moved a
+    page-table read above the load that faults the page in, because
+    volatile doesn't stop other memory accesses moving across it.
+    vm.c's rd() and wr() are compiler barriers for that reason; a
+    kernel needs the same for any access that can take a page fault.
+
+
 Where this goes next
 --------------------
 Each of these replaces a piece of sys/ipII for the IP20:
   1. exception vectors and a trap handler (done, see Exceptions)
   2. TLB management with R4000 paired entries, in place of the IP2's
-     hardware page map
+     hardware page map (done, see TLB and paging; a kernel adds ASIDs
+     per process and a page table it can grow)
   3. full cache maintenance with the R4000 cache instruction (ip20mon
      has the Hit operations for writing code; a kernel also needs the
      Index operations to flush whole caches)

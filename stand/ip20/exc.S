@@ -19,12 +19,45 @@
 
 /*
  * Vector stubs.  Each is copied to its vector address, so it must be
- * position independent: load exc_common's absolute address and jump,
- * with the vector number in k1 (set in the jump's delay slot).
+ * position independent: absolute addresses are built with lui/addiu,
+ * and the only branch is within the stub.  To reach the common
+ * handler, load exc_common's address and jump, with the vector number
+ * in k1 (set in the jump's delay slot).
+ */
+
+/*
+ * TLB refill, 32-bit (0x80000000, at most 32 instructions).  The fast
+ * path loads the EntryLo pair for BadVAddr from ip20mon's page table
+ * and writes it at a random index; EntryHi was already set by the
+ * hardware.  If the pair isn't valid, the retried access takes a TLB
+ * invalid exception through the general vector, where trap() can page
+ * it in.  Addresses above the page table go to trap() directly.
  */
 	.globl	vec_tlb, vec_tlb_end
 vec_tlb:
-	lui	$k0, %hi(exc_common)
+	mfc0	$k0, $8				/* BadVAddr */
+	lui	$k1, 0xfc00
+	and	$k1, $k0, $k1
+	bnez	$k1, 1f				/* not in the low 64 MB */
+	srl	$k0, $k0, PAGE_SHIFT + 1	/* VPN2 (delay slot) */
+	sll	$k0, $k0, 3			/* 8 bytes per EntryLo pair */
+	lui	$k1, %hi(pagetable)
+	addiu	$k1, $k1, %lo(pagetable)
+	addu	$k0, $k0, $k1
+	lw	$k1, 0($k0)
+	lw	$k0, 4($k0)
+	mtc0	$k1, $2				/* EntryLo0 */
+	mtc0	$k0, $3				/* EntryLo1 */
+	lui	$k0, %hi(tlb_refills)		/* count, and cover the */
+	lw	$k1, %lo(tlb_refills)($k0)	/* mtc0 -> tlbwr hazard */
+	nop
+	addiu	$k1, $k1, 1
+	sw	$k1, %lo(tlb_refills)($k0)
+	tlbwr
+	nop
+	nop
+	eret
+1:	lui	$k0, %hi(exc_common)
 	addiu	$k0, $k0, %lo(exc_common)
 	jr	$k0
 	addiu	$k1, $zero, 0

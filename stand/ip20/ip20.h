@@ -107,6 +107,9 @@
 #define CAUSE_EXC_MASK	0x1f
 
 #define EXC_INT		0
+#define EXC_MOD		1		/* store to a clean (D=0) page */
+#define EXC_TLBL	2
+#define EXC_TLBS	3
 #define EXC_IBE		6
 #define EXC_DBE		7
 #define EXC_SYS		8
@@ -139,6 +142,40 @@
 #define EXC_AREA	(1 << EXC_AREA_SHIFT)
 #define EXC_LEVELS	2
 
+/*
+ * TLB.  The R4000 has 48 entries, each mapping an even/odd pair of
+ * pages: EntryHi holds the virtual page-pair number (VPN2) and ASID,
+ * EntryLo0/1 the physical frame and flags for each half.
+ */
+#define TLB_ENTRIES	48
+#define PAGE_SHIFT	12
+#define PAGE_SIZE	(1 << PAGE_SHIFT)
+
+#define EL_G		0x00000001	/* global: ignore ASID (set in both) */
+#define EL_V		0x00000002	/* valid */
+#define EL_D		0x00000004	/* dirty: writes allowed */
+#define EL_C_SHIFT	3
+#define EL_C_UNCACHED	(2 << EL_C_SHIFT)
+#define EL_C_CACHED	(3 << EL_C_SHIFT)	/* noncoherent write-back */
+#define EL_PFN_SHIFT	6
+#define EL_PFN_MASK	0x00ffffff
+#define ENTRYLO(pa, flags) \
+	((((pa) >> PAGE_SHIFT) << EL_PFN_SHIFT) | (flags))
+#define ENTRYLO_PA(lo) \
+	((((lo) >> EL_PFN_SHIFT) & EL_PFN_MASK) << PAGE_SHIFT)
+
+#define EH_VPN2_MASK	0xffffe000
+#define EH_ASID_MASK	0x000000ff
+#define INDEX_P		0x80000000	/* tlbp found no match */
+
+/*
+ * ip20mon's page table: one EntryLo pair (8 bytes) per 8K of kuseg,
+ * covering the low 64 MB.  The refill handler in exc.S indexes it
+ * directly; misses above that go to trap().
+ */
+#define PT_SPAN_SHIFT	26
+#define PT_PAIRS	(1 << (PT_SPAN_SHIFT - PAGE_SHIFT - 1))
+
 #ifndef __ASSEMBLER__
 
 /* start.S */
@@ -158,14 +195,40 @@ void	trap_syscall(void);
 void	trap_ri(void);
 void	trap_overflow(void);
 
+/* tlb.S */
+struct tlbent {
+	unsigned long	hi, lo0, lo1, mask;	/* tlb.S uses these offsets */
+};
+void	tlb_read(int index, struct tlbent *);
+void	tlb_write(int index, const struct tlbent *);
+void	tlb_update(unsigned long hi, unsigned long lo0, unsigned long lo1);
+int	tlb_probe(unsigned long hi);
+unsigned long	get_entryhi(void);
+void	set_entryhi(unsigned long);
+unsigned long	get_pagemask(void);
+void	set_pagemask(unsigned long);
+unsigned long	get_wired(void);
+void	set_wired(unsigned long);
+
 /* trap.c */
 extern jmp_buf	mon_jb;
 extern int	mon_jb_set;
+extern unsigned	badaddr_code;
 void	exc_install(void);
 void	exc_uninstall(void);
 void	exc_vectors(void);
 void	exc_regs(void);
 void	trap_test(const char *kind);
+void	cache_wbinv(unsigned long start, unsigned long len);
+int	badaddr(unsigned long addr, int write, unsigned long *val);
+
+/* vm.c */
+void	vm_save(void);
+void	vm_restore(void);
+int	vm_fault(unsigned long va, int write);
+int	vm_modfault(unsigned long va);
+void	tlb_dump(void);
+void	vm_test(void);
 
 /* main.c */
 int	ip20_hw_ok(void);

@@ -34,7 +34,7 @@ static int		have_last;
 extern char vec_tlb[], vec_tlb_end[], vec_xtlb[], vec_xtlb_end[];
 extern char vec_general[], vec_general_end[];
 
-#define STUB_MAX	8		/* words saved per vector */
+#define STUB_MAX	32		/* words saved per vector (0x80 bytes) */
 
 static struct vector {
 	const char	*name;
@@ -77,8 +77,9 @@ cache_lines(void)
 	sline = cfg & CFG_SC ? 0 : 16 << ((cfg >> CFG_SB_SHIFT) & CFG_SB_MASK);
 }
 
-static void
-sync_icache(unsigned long start, unsigned long len)
+/* Write back and invalidate [start, start+len) in the D and secondary caches. */
+void
+cache_wbinv(unsigned long start, unsigned long len)
 {
 	unsigned long a, end = start + len;
 
@@ -87,6 +88,14 @@ sync_icache(unsigned long start, unsigned long len)
 	if (sline != 0)
 		for (a = start & ~(sline - 1); a < end; a += sline)
 			CACHE_OP(HIT_WRITEBACK_INV_SD, a);
+}
+
+static void
+sync_icache(unsigned long start, unsigned long len)
+{
+	unsigned long a, end = start + len;
+
+	cache_wbinv(start, len);
 	for (a = start & ~(iline - 1); a < end; a += iline)
 		CACHE_OP(HIT_INVALIDATE_I, a);
 }
@@ -113,6 +122,7 @@ exc_install(void)
 		return;
 	}
 	cache_lines();
+	vm_save();
 
 	/* Interrupts off while we own the vectors; the PROM's console is polled. */
 	set_status(saved_status & ~SR_IE);
@@ -148,6 +158,7 @@ exc_uninstall(void)
 
 	if (!installed)
 		return;
+	vm_restore();
 	for (v = vectors; v < vectors + NVECTORS; v++) {
 		memcpy((void *)v->addr, v->saved, stub_len(v));
 		sync_icache(v->addr, stub_len(v));
@@ -167,7 +178,7 @@ exc_vectors(void)
 	    "ip20mon's handlers (the PROM's are saved)" : "the PROM's");
 	for (v = vectors; v < vectors + NVECTORS; v++) {
 		printf("  %-12s %08x  PROM's code:", v->name, v->addr);
-		for (i = 0; i < stub_len(v) / 4; i++)
+		for (i = 0; i < stub_len(v) / 4 && i < 4; i++)
 			printf(" %08x", installed ? v->saved[i] :
 			    ((unsigned long *)v->addr)[i]);
 		printf("\n");
@@ -266,6 +277,37 @@ trap_recover(void)
 		;
 }
 
+/*
+ * badaddr: try one word access and report whether it faulted, like the
+ * IRIX routine of the same name, instead of abandoning the command.
+ * Returns 0 on success, -1 on a fault (badaddr_code says which).
+ */
+static jmp_buf		probe_jb;
+static volatile int	probing;
+unsigned		badaddr_code;
+
+static void
+probe_recover(void)
+{
+	exc_depth = 0;
+	probing = 0;
+	longjmp(probe_jb, 1);
+}
+
+int
+badaddr(unsigned long addr, int write, unsigned long *val)
+{
+	if (setjmp(probe_jb) != 0)
+		return -1;
+	probing = 1;
+	if (write)
+		*(volatile unsigned long *)addr = *val;
+	else
+		*val = *(volatile unsigned long *)addr;
+	probing = 0;
+	return 0;
+}
+
 /* Called from exc_common with the saved state; returns the frame to resume. */
 struct trapframe *
 trap(struct trapframe *tf)
@@ -273,6 +315,25 @@ trap(struct trapframe *tf)
 	unsigned code = (tf->cause >> CAUSE_EXC_SHIFT) & CAUSE_EXC_MASK;
 	unsigned long iaddr, insn = 0;
 	int have_insn = 0;
+
+	/* Page faults vm.c can satisfy: retry the instruction. */
+	if ((code == EXC_TLBL || code == EXC_TLBS) &&
+	    vm_fault(tf->badvaddr, code == EXC_TLBS))
+		return tf;
+	if (code == EXC_MOD && vm_modfault(tf->badvaddr))
+		return tf;
+
+	/* A fault badaddr() expected: no report, just tell it. */
+	if (probing) {
+		badaddr_code = code;
+		if ((code == EXC_IBE || code == EXC_DBE) && ip20_hw_ok()) {
+			REG32(MC_CPU_ERRSTAT) = 0;
+			REG32(MC_GIO_ERRSTAT) = 0;
+		}
+		tf->epc = (unsigned long)probe_recover;
+		tf->regs[29] = (unsigned long)tf + EXC_AREA - 32;
+		return tf;
+	}
 
 	if (exc_depth > 1)
 		printf("\n*** exception while handling an exception");

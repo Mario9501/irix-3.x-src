@@ -156,6 +156,18 @@ cmd_regs(const char *arg)
 	exc_regs();
 }
 
+static void
+cmd_tlb(const char *arg)
+{
+	tlb_dump();
+}
+
+static void
+cmd_vm(const char *arg)
+{
+	vm_test();
+}
+
 static const struct cmd {
 	const char	*name;
 	void		(*fn)(const char *);
@@ -171,6 +183,8 @@ static const struct cmd {
 	{ "trap",	cmd_trap,	"trap KIND: raise an exception on purpose" },
 	{ "regs",	cmd_regs,	"registers at the last exception" },
 	{ "vectors",	cmd_vectors,	"exception vectors and the PROM's code" },
+	{ "tlb",	cmd_tlb,	"show the valid TLB entries" },
+	{ "vm",		cmd_vm,		"test TLB refill, paging and wired entries" },
 	{ "reboot",	cmd_reboot,	"reset the machine" },
 	{ "exit",	0,		"return to the PROM" },
 	{ 0 }
