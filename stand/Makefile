@@ -19,6 +19,7 @@ clean clobber:
 	cd cmd; make clean
 	cd mon; make clean
 	cd pm2mon; make clobber
+	cd ip20; make clobber
 
 lib: anything
 	cd lib; make
@@ -31,5 +32,10 @@ mon: anything
 
 pm2mon: anything
 	cd pm2mon; make
+
+# IP20 (Indigo R4000) bring-up monitor.  It needs a MIPS cross toolchain,
+# so it is not part of "all"; see ip20/README.
+ip20: anything
+	cd ip20; make ecoff
 
 anything:

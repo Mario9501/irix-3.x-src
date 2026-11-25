@@ -1,0 +1,126 @@
+ip20mon -- standalone bring-up monitor for the IP20 (Indigo R4000/R4400)
+=======================================================================
+
+This is the first step toward running this IRIS 3.6 tree on an Indigo
+R4000.  The rest of the tree targets the 68020 IP2/PM2 boards; nothing
+here is shared with it yet.  ip20mon proves the basics a kernel port
+needs: the PROM can load us, we can drive the console, identify the CPU
+and caches, find memory, and return to the PROM cleanly.
+
+At startup it prints:
+  - the firmware (ARCS version) and system name the PROM reports
+  - CPU type and revision, primary and secondary cache geometry,
+    the CP0 Config and Status registers
+  - memory, both from the PROM's ARCS descriptors and from the MC
+    memory controller's bank registers (the two should agree)
+then gives an "ip20>" prompt:
+
+  help     list commands
+  info     firmware, CPU and memory summary
+  cpu      CPU type, caches and status register
+  mem      memory map from the PROM and the MC
+  clock    measure the CPU clock against the PROM's clock (~2 s)
+  env NAME show a PROM environment variable
+  args     show the arguments the PROM passed
+  reboot   reset the machine
+  exit     return to the PROM
+
+
+Building
+--------
+This needs a MIPS cross compiler on a modern host; the 68k tools that
+build the rest of the tree can't produce MIPS code.  On Debian/Ubuntu:
+
+	apt install gcc-mips-linux-gnu binutils-mips-linux-gnu
+	cd stand/ip20
+	make ecoff		# makes ip20mon.elf and ip20mon.ecoff
+
+Any big-endian-capable MIPS gcc works: make CROSS=mips-elf-.  The IP20
+PROM only loads ECOFF, which mkecoff.py (python3) writes in the same
+layout as NetBSD's and Linux's elf2ecoff; MKECOFF=elf2ecoff uses one of
+those instead.  Don't use "objcopy -O ecoff-bigmips": it writes magic
+0x140 for MIPS III code and keeps .rodata as its own section.
+
+The program is linked at 0x88002000 (physical 0x08002000, the second
+page of RAM), where NetBSD's IP20 boot loader also loads.
+
+
+Booting
+-------
+From the PROM's Command Monitor (">>"), either over the network with
+a BOOTP/TFTP server:
+
+	>> boot -f bootp()server:/path/ip20mon.ecoff
+
+or from a file in the disk's volume header, put there from IRIX with
+"dvhtool -v creat ip20mon.ecoff ip20mon" (remove it again with
+"dvhtool -v delete ip20mon"):
+
+	>> boot -f dksc(0,1,8)ip20mon
+
+"exit" returns to the PROM.  ip20mon talks to whatever the PROM uses as
+its console, so to see it on serial port 1 set "nvram console d" from
+IRIX (or "setenv console d" at ">>") first; "G" is the graphics head.
+
+With only a serial line to an IRIX root shell, the file can be sent as
+hex text and decoded with "perl -ne 'chomp; print pack(\"H*\", $_)'";
+compare cksum on both ends.  Hex is safer than uuencode here, since a
+System V tty may treat # and @ as erase and kill characters.
+
+
+Hardware facts and where they come from
+---------------------------------------
+  HPC1.5 at 0x1fb80000; Z85C30s at +0xd00 (kbd/mouse) and +0xd10 (rear
+  ports, port 1 = channel B); control/data at byte 3/7 of each channel
+	NetBSD sys/arch/sgimips/hpc/hpcreg.h, hpc.c, dev/zs.c
+  MC at 0x1fa00000, MEMCFG0/1 at +0xc4/+0xcc, SYSID at +0x1c
+	NetBSD sys/arch/sgimips/dev/imcreg.h
+  MEMCFG bank decode (base, size, valid; shifts depend on MC revision)
+	Linux arch/mips/sgi-ip22/ip22-mc.c
+  ARCS parameter block at physical 0x1000; firmware vector order;
+  SGI memory-type numbering (2 = free contiguous, 3 = free)
+	NetBSD sys/dev/arcbios/arcbios.h, arcbios.c
+  IP20 board revision in bits 14:12 of 0x1fbd0000
+	NetBSD sys/arch/sgimips/sgimips/machdep.c
+  CP0 PRId, Config, Status layouts
+	MIPS R4000 Microprocessor User's Manual
+
+Tested on hardware
+------------------
+Run on an Indigo R4000 (100 MHz, 1 MB secondary cache, 256 MB, board
+revision 5, MC revision 1, IRIX 6.5 on disk), loaded from the volume
+header.  Everything matched IRIX's hinv:
+
+	9536+16+16432 entry: 0x88002000
+	firmware: ARCS 1.10, firmware vector 34 entries
+	system: SGI-IP20
+	cpu: R4000 revision 2.2 (PRId 00000422)
+	  primary I-cache 8K, 16-byte lines
+	  primary D-cache 8K, 16-byte lines
+	  secondary cache, 128-byte lines (SC part)
+	memory, as reported by the PROM:      total 131072K
+	memory, as configured in the MC:      total 262144K
+	  Count runs at 50.00 MHz, so the CPU runs at about 100 MHz
+
+What that settled:
+  - The IP20 PROM does provide an ARCS parameter block at 0x1000, with
+    working Read/Write, GetEnvironmentVariable, GetMemoryDescriptor,
+    GetChild and GetRelativeTime.  It also passes its environment
+    (ConsoleOut=, OSLoader=, ...) as extra argv entries.
+  - The MEMCFG decode from Linux's IP22 code is right for IP20 too.
+  - The PROM's memory descriptors only cover the first 128 MB
+    (0x08000000-0x0fffffff).  Memory above that, here a second bank at
+    0x10000000, shows up only in the MC, so a kernel has to size
+    memory from the MC rather than trusting the PROM.
+
+
+Where this goes next
+--------------------
+Each of these replaces a piece of sys/ipII for the IP20:
+  1. exception vectors (TLB refill at 0x80000000, general at 0x80000180)
+     and a trap handler that can report and survive a bus error
+  2. TLB management with R4000 paired entries, in place of the IP2's
+     hardware page map
+  3. cache maintenance with the R4000 cache instruction
+  4. a clock interrupt from CP0 Count/Compare
+  5. HPC1.5 DMA and the WD33C93 SCSI driver, so the kernel can read disk
