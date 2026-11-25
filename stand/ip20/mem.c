@@ -73,6 +73,27 @@ mc_mem(void)
 	printf("  total %uK\n", total);
 }
 
+/* Physical address just past the highest MC bank, or 0 if none. */
+unsigned long
+mc_mem_end(void)
+{
+	unsigned long rev = REG32(MC_SYSID) & MC_SYSID_REV;
+	unsigned long cfg, half, end, max = 0;
+	int bank, ashift = rev >= 5 ? 24 : 22, sshift = rev >= 5 ? 16 : 14;
+
+	for (bank = 0; bank < 4; bank++) {
+		cfg = REG32(bank < 2 ? MC_MEMCFG0 : MC_MEMCFG1);
+		half = (bank & 1) ? cfg & 0xffff : cfg >> 16;
+		if ((half & MC_MEMCFG_VALID) == 0)
+			continue;
+		end = ((half & MC_MEMCFG_BASE) << ashift) +
+		    (((half & MC_MEMCFG_SIZE) + 0x100) << sshift);
+		if (end > max)
+			max = end;
+	}
+	return max;
+}
+
 void
 mem_info(int probe_mc)
 {

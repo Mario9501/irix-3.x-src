@@ -19,7 +19,7 @@ static int	mach_type;	/* IP number from the PROM, 0 if unknown */
  * Only poke IP20 registers directly when the PROM says this is an IP20,
  * or when it can't say at all (no ARCS) and we take that on trust.
  */
-static int
+int
 ip20_hw_ok(void)
 {
 	return mach_type == 20 || mach_type == 0;
@@ -132,8 +132,28 @@ static void
 cmd_reboot(const char *arg)
 {
 	printf("rebooting...\n");
+	exc_uninstall();
 	arcs_reboot();
+	exc_install();
 	printf("the PROM has no reboot entry\n");
+}
+
+static void
+cmd_trap(const char *arg)
+{
+	trap_test(arg);
+}
+
+static void
+cmd_vectors(const char *arg)
+{
+	exc_vectors();
+}
+
+static void
+cmd_regs(const char *arg)
+{
+	exc_regs();
 }
 
 static const struct cmd {
@@ -148,6 +168,9 @@ static const struct cmd {
 	{ "clock",	cmd_clock,	"measure the CPU clock (takes ~2 s)" },
 	{ "env",	cmd_env,	"env NAME: show a PROM variable" },
 	{ "args",	cmd_args,	"show the arguments the PROM passed" },
+	{ "trap",	cmd_trap,	"trap KIND: raise an exception on purpose" },
+	{ "regs",	cmd_regs,	"registers at the last exception" },
+	{ "vectors",	cmd_vectors,	"exception vectors and the PROM's code" },
 	{ "reboot",	cmd_reboot,	"reset the machine" },
 	{ "exit",	0,		"return to the PROM" },
 	{ 0 }
@@ -200,6 +223,11 @@ monitor(void)
 	const struct cmd *c;
 
 	for (;;) {
+		/* An exception that abandons a command lands back here. */
+		if (setjmp(mon_jb) != 0)
+			printf("back in ip20mon\n");
+		mon_jb_set = 1;
+
 		printf("ip20> ");
 		readline(line, sizeof line);
 
@@ -239,8 +267,11 @@ main(int argc, char **argv, char **envp)
 	printf("\nip20mon: IRIS 3.6 standalone monitor for the IP20 "
 	    "(Indigo R4000)\n\n");
 	cmd_info("");
+	printf("\n");
+	exc_install();
 	printf("\ntype help for commands, exit to return to the PROM\n");
 	monitor();
+	exc_uninstall();
 	printf("returning to the PROM\n");
 	return 0;
 }

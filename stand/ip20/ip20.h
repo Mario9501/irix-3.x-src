@@ -31,6 +31,12 @@
 #define MC_MEMCFG0	(MC_BASE + 0xc4)	/* banks 0 (high half), 1 (low) */
 #define MC_MEMCFG1	(MC_BASE + 0xcc)	/* banks 2 (high half), 3 (low) */
 
+/* Bus-error latches; write 0 to the status registers to clear them. */
+#define MC_CPU_ERRADDR	(MC_BASE + 0xe4)
+#define MC_CPU_ERRSTAT	(MC_BASE + 0xec)
+#define MC_GIO_ERRADDR	(MC_BASE + 0xf4)
+#define MC_GIO_ERRSTAT	(MC_BASE + 0xfc)
+
 #define MC_SYSID_REV	0x0000000f
 #define MC_MEMCFG_BASE	0x000000ff
 #define MC_MEMCFG_SIZE	0x00001f00
@@ -92,6 +98,47 @@
 #define SR_CU0		0x10000000
 #define SR_CU1		0x20000000
 
+/* CP0 Cause */
+#define CAUSE_BD	0x80000000	/* exception in a branch delay slot */
+#define CAUSE_CE_SHIFT	28		/* coprocessor, for CpU */
+#define CAUSE_CE_MASK	0x3
+#define CAUSE_IP_MASK	0x0000ff00
+#define CAUSE_EXC_SHIFT	2
+#define CAUSE_EXC_MASK	0x1f
+
+#define EXC_INT		0
+#define EXC_IBE		6
+#define EXC_DBE		7
+#define EXC_SYS		8
+#define EXC_BP		9
+#define EXC_RI		10
+#define EXC_CPU		11
+#define EXC_OV		12
+#define EXC_TR		13
+
+/* Exception vectors when Status.BEV is clear */
+#define VEC_TLB		0x80000000	/* TLB refill, 32-bit addressing */
+#define VEC_XTLB	0x80000080	/* TLB refill, 64-bit addressing */
+#define VEC_GENERAL	0x80000180	/* everything else */
+
+/*
+ * Trap frame layout, shared by exc.S and trap.c.  Each nesting level
+ * gets an EXC_AREA-byte area: the frame at the bottom, stack above it.
+ */
+#define TF_REG(n)	((n) * 4)
+#define TF_HI		128
+#define TF_LO		132
+#define TF_EPC		136
+#define TF_CAUSE	140
+#define TF_STATUS	144
+#define TF_BADVADDR	148
+#define TF_VECTOR	152
+#define TF_SIZE		160
+
+#define EXC_AREA_SHIFT	12
+#define EXC_AREA	(1 << EXC_AREA_SHIFT)
+#define EXC_LEVELS	2
+
 #ifndef __ASSEMBLER__
 
 /* start.S */
@@ -99,6 +146,29 @@ unsigned long	get_prid(void);
 unsigned long	get_config(void);
 unsigned long	get_status(void);
 unsigned long	get_count(void);
+
+/* exc.S */
+typedef unsigned long jmp_buf[12];
+int	setjmp(jmp_buf) __attribute__((returns_twice));
+void	longjmp(jmp_buf, int) __attribute__((noreturn));
+unsigned long	get_cause(void);
+void	set_status(unsigned long);
+void	trap_break(void);
+void	trap_syscall(void);
+void	trap_ri(void);
+void	trap_overflow(void);
+
+/* trap.c */
+extern jmp_buf	mon_jb;
+extern int	mon_jb_set;
+void	exc_install(void);
+void	exc_uninstall(void);
+void	exc_vectors(void);
+void	exc_regs(void);
+void	trap_test(const char *kind);
+
+/* main.c */
+int	ip20_hw_ok(void);
 
 /* cons.c */
 void	cons_init(void);
@@ -116,6 +186,7 @@ void	clock_info(void);
 
 /* mem.c */
 void	mem_info(int probe_mc);
+unsigned long	mc_mem_end(void);
 
 /* subr.c */
 void	*memset(void *, int, unsigned long);

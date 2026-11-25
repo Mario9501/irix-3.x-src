@@ -22,7 +22,7 @@ CFLAGS	= $(CPUFLAGS) -O2 -Wall -ffreestanding -fno-builtin \
 ASFLAGS	= $(CPUFLAGS)
 LDFLAGS	= -EB -n -T ip20.ld
 
-OBJS	= start.o main.o arcs.o cons.o zs.o cpu.o mem.o subr.o
+OBJS	= start.o exc.o main.o arcs.o cons.o zs.o cpu.o mem.o subr.o trap.o
 
 all: ip20mon.elf
 
@@ -37,10 +37,13 @@ ip20mon.ecoff: ip20mon.elf mkecoff.py
 start.o: start.S
 	$(CC) $(ASFLAGS) -c start.S
 
+exc.o: exc.S ip20.h
+	$(CC) $(ASFLAGS) -c exc.S
+
 .c.o:
 	$(CC) $(CFLAGS) -c $<
 
-main.o arcs.o cons.o cpu.o mem.o: ip20.h arcs.h
+main.o arcs.o cons.o cpu.o mem.o trap.o: ip20.h arcs.h
 zs.o subr.o: ip20.h
 
 clean:

@@ -22,8 +22,55 @@ then gives an "ip20>" prompt:
   clock    measure the CPU clock against the PROM's clock (~2 s)
   env NAME show a PROM environment variable
   args     show the arguments the PROM passed
+  trap KIND  raise an exception on purpose (no KIND lists them)
+  regs     registers at the last exception
+  vectors  exception vectors, the PROM's code there, cache line sizes
   reboot   reset the machine
   exit     return to the PROM
+
+
+Exceptions
+----------
+Before the prompt appears, ip20mon copies a small stub to each R4000
+exception vector (0x80000000 TLB refill, 0x80000080 XTLB refill,
+0x80000180 everything else), saving the PROM's code there, and puts it
+back on exit.  The stubs are written through the D-cache, so each
+vector is written back from the D-cache and secondary cache and dropped
+from the I-cache (the R4000 "cache" instruction) before it can be used;
+ip20mon then reads the vectors back uncached to check memory has them.
+Interrupts stay off while the vectors are ours; the PROM's console is
+polled, so its I/O still works.
+
+On an exception exc.S saves every register in a trap frame, leaves
+exception level, and calls trap(), which prints the cause, EPC,
+BadVAddr and registers.  Breakpoints and syscalls resume at the next
+instruction.  Anything else abandons the command: trap() points EPC at
+a recovery routine and erets to it (so the CPU really leaves exception
+level), and that routine longjmps back to the ip20> prompt.  A bus
+error also shows and clears the MC's latched error address and status.
+An exception inside trap() is handled one level deeper; a third level
+hangs, since nothing sane is left.
+
+"trap" kinds: break, syscall, ri (reserved instruction), overflow,
+div0 (gcc's teq divide-by-zero check), unaligned, null (TLB miss on
+address 0) and bus (a load just past the last MC memory bank).
+
+All eight were run on the Indigo R4000.  break and syscall resumed;
+the rest reported the right cause (10, 12, 13, 4, 2 and 7) and returned
+to the prompt, with "null" arriving through the TLB refill vector.
+Afterwards "clock", "env" and "exit" still worked, and IRIX booted
+normally on the restored PROM vectors.  What the run showed:
+  - The PROM's own vector code loads a handler address from the ARCS
+    parameter block (GEVector at 0x80001014, UTLBMissVector at
+    0x80001018) and jumps to it; both point into the PROM.
+  - The MC's bus-error interrupt is CPU interrupt line IP6, the only
+    one the PROM leaves enabled.  It went pending on the bus error and
+    dropped again once trap() cleared the MC's status registers.
+  - Physical 0x18000000, just past 256 MB of RAM, is sent to the GIO
+    bus: the MC latched it in the GIO error address with status 0x400,
+    "GIO bus timed out", not as a CPU memory error.
+  - Data bus errors don't set BadVAddr; the faulting address only
+    comes from the MC (or from decoding the instruction at EPC).
 
 
 Building
@@ -117,10 +164,11 @@ What that settled:
 Where this goes next
 --------------------
 Each of these replaces a piece of sys/ipII for the IP20:
-  1. exception vectors (TLB refill at 0x80000000, general at 0x80000180)
-     and a trap handler that can report and survive a bus error
+  1. exception vectors and a trap handler (done, see Exceptions)
   2. TLB management with R4000 paired entries, in place of the IP2's
      hardware page map
-  3. cache maintenance with the R4000 cache instruction
+  3. full cache maintenance with the R4000 cache instruction (ip20mon
+     has the Hit operations for writing code; a kernel also needs the
+     Index operations to flush whole caches)
   4. a clock interrupt from CP0 Count/Compare
   5. HPC1.5 DMA and the WD33C93 SCSI driver, so the kernel can read disk
